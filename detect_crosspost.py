@@ -12,13 +12,16 @@ Le fichier Excel doit contenir au moins les colonnes :
     - crosspost        : colonne resultat, remplie avec True/False par le script
     - handle_instagram : (optionnel mais recommande) le(s) handle(s) Instagram
                          officiel(s) de la marque, ex: "nike" ou "nike, nike.france"
-                         si plusieurs comptes. A remplir a la main une fois par marque.
+                         si plusieurs comptes. A remplir sur UNE SEULE ligne par
+                         marque : le script propage automatiquement la valeur a
+                         toutes les autres lignes de la meme marque.
 
 Le script recupere le handle Instagram (@compte) de l'auteur de chaque post en
 parsant la page publique du post, puis le compare :
-    - aux handles listes dans "handle_instagram" si la colonne est renseignee
-      pour cette ligne (comparaison fiable, insensible aux differences entre
-      nom de marque et handle reel) ;
+    - aux handles connus pour cette marque (renseignes sur n'importe quelle
+      ligne de cette marque dans "handle_instagram") si disponibles
+      (comparaison fiable, insensible aux differences entre nom de marque et
+      handle reel) ;
     - sinon, en repli, au nom de la marque (comparaison approximative, a
       verifier manuellement en cas de doute).
 Le fichier Excel est mis a jour en place (memes onglet et colonnes).
@@ -101,6 +104,29 @@ def parse_known_handles(handle_instagram: str | None) -> list[str]:
     return [h.strip() for h in str(handle_instagram).split(",") if h.strip()]
 
 
+def build_brand_handles_map(df: pd.DataFrame) -> dict[str, list[str]]:
+    """Construit brand normalise -> handles, a partir de n'importe quelle ligne
+    de l'Excel ou handle_instagram est renseigne (inutile de le repeter sur
+    chaque ligne d'une meme marque)."""
+    brand_handles: dict[str, list[str]] = {}
+    if "handle_instagram" not in df.columns:
+        return brand_handles
+
+    for _, row in df.iterrows():
+        handles = parse_known_handles(row.get("handle_instagram"))
+        if not handles:
+            continue
+        norm_brand = normalize(row.get("brand"))
+        if not norm_brand:
+            continue
+        brand_handles.setdefault(norm_brand, [])
+        for handle in handles:
+            if handle not in brand_handles[norm_brand]:
+                brand_handles[norm_brand].append(handle)
+
+    return brand_handles
+
+
 def is_owned_crosspost(brand: str, username: str | None, known_handles: list[str]) -> bool:
     """Compare le handle Instagram trouve aux handles connus, ou a defaut au nom de marque."""
     if not username:
@@ -130,6 +156,8 @@ def process_file(xlsx_path: Path) -> None:
     if "crosspost" not in df.columns:
         df["crosspost"] = None
 
+    brand_handles_map = build_brand_handles_map(df)
+
     total = len(df)
     for index, row in df.iterrows():
         brand = row.get("brand")
@@ -140,6 +168,8 @@ def process_file(xlsx_path: Path) -> None:
             continue
 
         known_handles = parse_known_handles(row.get("handle_instagram"))
+        if not known_handles:
+            known_handles = brand_handles_map.get(normalize(brand), [])
 
         print(f"[{index + 1}/{total}] {brand} -> {lien}")
         username = extract_username(str(lien))
