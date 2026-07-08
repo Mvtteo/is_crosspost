@@ -2,3 +2,4 @@ exemple.xlsx
 __pycache__/
 .env
 .ig_session
+.ig_session_username

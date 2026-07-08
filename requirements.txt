@@ -2,3 +2,4 @@ pandas
 openpyxl
 instaloader
 python-dotenv
+browser-cookie3

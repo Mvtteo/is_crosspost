@@ -29,10 +29,17 @@ Le fichier Excel est mis a jour en place (memes onglet et colonnes).
 
 Configuration requise (une seule fois) :
     1. Copier .env.example en .env
-    2. Remplir IG_USERNAME et IG_PASSWORD avec un compte Instagram
-       (idealement un compte secondaire/test, pas ton compte principal :
-       l'automatisation de connexions viole les CGU d'Instagram et peut
-       entrainer une limitation temporaire du compte utilise).
+    2. Deux methodes de connexion possibles (renseigner l'une des deux dans .env) :
+       a. IG_COOKIES_BROWSER (recommande) : nom d'un navigateur (chrome, firefox,
+          edge, safari, brave, chromium, opera, opera_gx, vivaldi, librewolf) dans
+          lequel tu es deja connecte normalement a Instagram. Le script reutilise
+          cette session existante, ce qui evite le "checkpoint"/verification
+          qu'Instagram declenche souvent sur un login scripte (nouvel appareil).
+       b. IG_USERNAME + IG_PASSWORD : login classique. Plus simple mais plus
+          susceptible de declencher une demande de verification Instagram.
+    Dans tous les cas, idealement utiliser un compte secondaire/test plutot que
+    ton compte principal : l'automatisation de connexions viole les CGU
+    d'Instagram et peut entrainer une limitation temporaire du compte utilise.
 """
 
 import os
@@ -48,8 +55,14 @@ from dotenv import load_dotenv
 
 REQUEST_DELAY_SECONDS = 2  # pause entre deux requetes pour eviter le blocage Instagram
 SESSION_FILE = Path(__file__).parent / ".ig_session"
+SESSION_USERNAME_FILE = Path(__file__).parent / ".ig_session_username"
 
 SHORTCODE_PATTERN = re.compile(r"instagram\.com/(?:p|reel|tv)/([A-Za-z0-9_-]+)")
+
+SUPPORTED_BROWSERS = (
+    "brave", "chrome", "chromium", "edge", "firefox",
+    "librewolf", "opera", "opera_gx", "safari", "vivaldi",
+)
 
 
 def normalize(text: str) -> str:
@@ -61,15 +74,47 @@ def normalize(text: str) -> str:
     return re.sub(r"[^a-z0-9]", "", text.lower())
 
 
+def login_via_browser_cookies(loader: instaloader.Instaloader, browser: str) -> None:
+    """Reutilise la session Instagram deja active dans un navigateur local."""
+    import browser_cookie3
+
+    if browser not in SUPPORTED_BROWSERS:
+        raise SystemExit(
+            f"IG_COOKIES_BROWSER invalide : {browser!r}. "
+            f"Valeurs supportees : {', '.join(SUPPORTED_BROWSERS)}"
+        )
+
+    browser_fn = getattr(browser_cookie3, browser)
+    cookies = {c.name: c.value for c in browser_fn() if "instagram" in c.domain}
+    if not cookies:
+        raise SystemExit(
+            f"Aucun cookie Instagram trouve dans {browser}. "
+            f"Connecte-toi a instagram.com dans ce navigateur puis reessaie."
+        )
+
+    loader.context.update_cookies(cookies)
+    username = loader.test_login()
+    if not username:
+        raise SystemExit(
+            f"Cookies charges depuis {browser} mais session invalide. "
+            f"Reconnecte-toi a instagram.com dans ce navigateur puis reessaie."
+        )
+    loader.context.username = username
+    print(f"Connecte via cookies {browser} en tant que {username}.")
+
+
 def get_instagram_loader() -> instaloader.Instaloader:
-    """Connecte un Instaloader au compte configure dans .env, avec cache de session."""
+    """Connecte un Instaloader a Instagram (cookies navigateur ou identifiants),
+    avec cache de session pour eviter de se reconnecter a chaque lancement."""
     load_dotenv()
+    browser = os.environ.get("IG_COOKIES_BROWSER")
     username = os.environ.get("IG_USERNAME")
     password = os.environ.get("IG_PASSWORD")
-    if not username or not password:
+
+    if not browser and not (username and password):
         raise SystemExit(
-            "IG_USERNAME / IG_PASSWORD manquants. "
-            "Copie .env.example en .env et renseigne un compte Instagram."
+            "Configuration Instagram manquante. Copie .env.example en .env et "
+            "renseigne soit IG_COOKIES_BROWSER, soit IG_USERNAME + IG_PASSWORD."
         )
 
     loader = instaloader.Instaloader(
@@ -82,15 +127,24 @@ def get_instagram_loader() -> instaloader.Instaloader:
         compress_json=False,
     )
 
-    if SESSION_FILE.exists():
+    cached_username = username or (
+        SESSION_USERNAME_FILE.read_text().strip() if SESSION_USERNAME_FILE.exists() else None
+    )
+    if cached_username and SESSION_FILE.exists():
         try:
-            loader.load_session_from_file(username, str(SESSION_FILE))
-            return loader
+            loader.load_session_from_file(cached_username, str(SESSION_FILE))
+            if loader.test_login():
+                return loader
         except Exception:
             pass  # session invalide/expiree, on se reconnecte ci-dessous
 
-    loader.login(username, password)
+    if browser:
+        login_via_browser_cookies(loader, browser)
+    else:
+        loader.login(username, password)
+
     loader.save_session_to_file(str(SESSION_FILE))
+    SESSION_USERNAME_FILE.write_text(loader.context.username)
     return loader
 
 
